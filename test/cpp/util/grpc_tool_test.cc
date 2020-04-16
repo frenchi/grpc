@@ -18,8 +18,6 @@
 
 #include "test/cpp/util/grpc_tool.h"
 
-#include <sstream>
-
 #include <gflags/gflags.h>
 #include <grpc/grpc.h>
 #include <grpc/support/alloc.h>
@@ -32,14 +30,20 @@
 #include <grpcpp/server_context.h>
 #include <gtest/gtest.h>
 
+#include <sstream>
+
 #include "src/core/lib/gpr/env.h"
+#include "src/core/lib/iomgr/load_file.h"
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
 #include "src/proto/grpc/testing/echo.pb.h"
-#include "test/core/end2end/data/ssl_test_data.h"
 #include "test/core/util/port.h"
 #include "test/core/util/test_config.h"
 #include "test/cpp/util/cli_credentials.h"
 #include "test/cpp/util/string_ref_helper.h"
+
+#define CA_CERT_PATH "src/core/tsi/test_creds/ca.pem"
+#define SERVER_CERT_PATH "src/core/tsi/test_creds/server1.pem"
+#define SERVER_KEY_PATH "src/core/tsi/test_creds/server1.key"
 
 using grpc::testing::EchoRequest;
 using grpc::testing::EchoResponse;
@@ -115,19 +119,30 @@ const int kServerDefaultResponseStreamsToSend = 3;
 
 class TestCliCredentials final : public grpc::testing::CliCredentials {
  public:
-  TestCliCredentials(bool secure = false) : secure_(secure) {}
+  TestCliCredentials(bool secure = false) : secure_(secure) {
+    if (secure_) {
+      grpc_slice ca_slice;
+      GPR_ASSERT(GRPC_LOG_IF_ERROR("load_file",
+                                   grpc_load_file(CA_CERT_PATH, 1, &ca_slice)));
+      const char* test_root_cert =
+          reinterpret_cast<const char*> GRPC_SLICE_START_PTR(ca_slice);
+      test_root_cert_ = test_root_cert;
+      grpc_slice_unref(ca_slice);
+    }
+  }
   std::shared_ptr<grpc::ChannelCredentials> GetChannelCredentials()
       const override {
     if (!secure_) {
       return InsecureChannelCredentials();
     }
-    SslCredentialsOptions ssl_opts = {test_root_cert, "", ""};
+    SslCredentialsOptions ssl_opts = {test_root_cert_, "", ""};
     return grpc::SslCredentials(grpc::SslCredentialsOptions(ssl_opts));
   }
   const grpc::string GetCredentialUsage() const override { return ""; }
 
  private:
   const bool secure_;
+  std::string test_root_cert_;
 };
 
 bool PrintStream(std::stringstream* ss, const grpc::string& output) {
@@ -228,7 +243,21 @@ class TestServiceImpl : public ::grpc::testing::EchoTestService::Service {
 
 class GrpcToolTest : public ::testing::Test {
  protected:
-  GrpcToolTest() {}
+  GrpcToolTest() {
+    grpc_slice cert_slice, key_slice;
+    GPR_ASSERT(GRPC_LOG_IF_ERROR(
+        "load_file", grpc_load_file(SERVER_CERT_PATH, 1, &cert_slice)));
+    GPR_ASSERT(GRPC_LOG_IF_ERROR(
+        "load_file", grpc_load_file(SERVER_KEY_PATH, 1, &key_slice)));
+    const char* server_cert =
+        reinterpret_cast<const char*> GRPC_SLICE_START_PTR(cert_slice);
+    const char* server_key =
+        reinterpret_cast<const char*> GRPC_SLICE_START_PTR(key_slice);
+    server_cert_ = server_cert;
+    server_key_ = server_key;
+    grpc_slice_unref(cert_slice);
+    grpc_slice_unref(key_slice);
+  }
 
   // SetUpServer cannot be used with EXPECT_EXIT. grpc_pick_unused_port_or_die()
   // uses atexit() to free chosen ports, and it will spawn a new thread in
@@ -241,8 +270,8 @@ class GrpcToolTest : public ::testing::Test {
     ServerBuilder builder;
     std::shared_ptr<grpc::ServerCredentials> creds;
     if (secure) {
-      SslServerCredentialsOptions::PemKeyCertPair pkcp = {test_server1_key,
-                                                          test_server1_cert};
+      SslServerCredentialsOptions::PemKeyCertPair pkcp = {server_key_,
+                                                          server_cert_};
       SslServerCredentialsOptions ssl_opts;
       ssl_opts.pem_root_certs = "";
       ssl_opts.pem_key_cert_pairs.push_back(pkcp);
@@ -261,6 +290,8 @@ class GrpcToolTest : public ::testing::Test {
   std::unique_ptr<Server> server_;
   TestServiceImpl service_;
   reflection::ProtoServerReflectionPlugin plugin_;
+  std::string server_key_;
+  std::string server_cert_;
 };
 
 TEST_F(GrpcToolTest, NoCommand) {
