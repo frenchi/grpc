@@ -68,7 +68,7 @@ class DefaultCredentialsProvider : public CredentialsProvider {
   void AddSecureType(
       const grpc::string& type,
       std::unique_ptr<CredentialTypeProvider> type_provider) override {
-    // This clobbers any existing entry for type, except the defaults, which
+    // This clobbers any existing entry for type, except the defaults which
     // can't be clobbered.
     std::unique_lock<std::mutex> lock(mu_);
     auto it = std::find(added_secure_type_names_.begin(),
