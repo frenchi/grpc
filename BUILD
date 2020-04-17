@@ -991,6 +991,7 @@ grpc_cc_library(
     ],
     language = "c++",
     public_hdrs = GRPC_PUBLIC_HDRS,
+    use_cfstream = True,
     deps = [
         "eventmanager_libuv",
         "gpr_base",
